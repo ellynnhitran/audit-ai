@@ -1,66 +1,109 @@
-import { useEffect, useState } from 'react'
-import { useParams, Link } from 'react-router-dom'
+import { useEffect, useState, useCallback } from 'react'
+import { useParams, useLocation, Link } from 'react-router-dom'
 import { Group, Panel, Separator } from 'react-resizable-panels'
 import { useAudit } from '@/hooks/useAudit'
 import { useFindings } from '@/hooks/useFindings'
 import { DocumentViewer } from '@/components/review/DocumentViewer'
 import { FindingsList } from '@/components/review/FindingsList'
 import { ExportButton } from '@/components/report/ExportButton'
-import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import { Progress } from '@/components/ui/progress'
 import { Skeleton } from '@/components/ui/skeleton'
-import { ArrowLeft, Loader2 } from 'lucide-react'
-import type { Audit, Asset, AuditStatus, Finding } from '@/types/database'
+import { ArrowLeft } from 'lucide-react'
+import type { Audit, Asset, Finding, FindingDisposition, SummaryMetrics } from '@/types/database'
 
-const statusConfig: Record<AuditStatus, { label: string; variant: 'default' | 'secondary' | 'destructive' }> = {
-  pending: { label: 'Pending', variant: 'secondary' },
-  processing: { label: 'Processing', variant: 'default' },
-  completed: { label: 'Completed', variant: 'default' },
-  failed: { label: 'Failed', variant: 'destructive' },
+interface LocalState {
+  text: string
+  fileName: string
+  findings: Finding[]
+  summaryMetrics: SummaryMetrics
 }
 
 export default function ReviewPage() {
   const { auditId } = useParams<{ auditId: string }>()
-  const { fetchAudit } = useAudit()
-  const { findings, loading: findingsLoading, updateDisposition } = useFindings(auditId)
+  const location = useLocation()
+  const localState = location.state as LocalState | undefined
 
+  const isLocal = auditId === 'local' && localState
+
+  if (isLocal) {
+    return <LocalReview state={localState} />
+  }
+
+  return <DbReview auditId={auditId!} />
+}
+
+function LocalReview({ state }: { state: LocalState }) {
+  const [findings, setFindings] = useState(state.findings)
+  const [activeFindingId, setActiveFindingId] = useState<string | undefined>()
+
+  const updateDisposition = useCallback((findingId: string, disposition: FindingDisposition, comment?: string) => {
+    setFindings(prev =>
+      prev.map(f => f.id === findingId ? { ...f, disposition, user_comment: comment ?? f.user_comment } : f)
+    )
+  }, [])
+
+  const localAudit: Audit = {
+    id: 'local',
+    user_id: '',
+    asset_id: '',
+    workflow_id: null,
+    status: 'completed',
+    check_order: ['spelling', 'grammar', 'readability', 'formatting'],
+    custom_instructions: null,
+    summary_metrics: state.summaryMetrics,
+    started_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    error_message: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+
+  const localAsset: Asset = {
+    id: 'local',
+    user_id: '',
+    name: state.fileName,
+    type: 'document',
+    mime_type: 'text/plain',
+    file_size: state.text.length,
+    storage_key: '',
+    storage_url: '',
+    status: 'ready',
+    metadata: {},
+    extracted_text: state.text,
+    transcript: null,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  }
+
+  return (
+    <ReviewLayout
+      audit={localAudit}
+      asset={localAsset}
+      findings={findings}
+      activeFindingId={activeFindingId}
+      onFindingClick={(f) => setActiveFindingId(f.id)}
+      onUpdateDisposition={updateDisposition}
+    />
+  )
+}
+
+function DbReview({ auditId }: { auditId: string }) {
+  const { fetchAudit } = useAudit()
+  const { findings, updateDisposition } = useFindings(auditId)
   const [audit, setAudit] = useState<Audit | null>(null)
   const [asset, setAsset] = useState<Asset | null>(null)
   const [loading, setLoading] = useState(true)
   const [activeFindingId, setActiveFindingId] = useState<string | undefined>()
 
   useEffect(() => {
-    if (!auditId) return
-
-    async function load() {
-      const data = await fetchAudit(auditId!)
+    fetchAudit(auditId).then(data => {
       if (data) {
         setAudit(data)
         setAsset(data.assets as unknown as Asset)
       }
       setLoading(false)
-    }
-
-    load()
-
-    const interval = setInterval(async () => {
-      const data = await fetchAudit(auditId!)
-      if (data) {
-        setAudit(data)
-        if (data.assets) setAsset(data.assets as unknown as Asset)
-        if (data.status === 'completed' || data.status === 'failed') {
-          clearInterval(interval)
-        }
-      }
-    }, 2000)
-
-    return () => { clearInterval(interval) }
+    })
   }, [auditId])
-
-  function handleFindingClick(finding: Finding) {
-    setActiveFindingId(finding.id)
-  }
 
   if (loading) {
     return (
@@ -75,47 +118,33 @@ export default function ReviewPage() {
     return (
       <div className="flex flex-col items-center justify-center gap-4 py-20">
         <p className="text-muted-foreground">Audit not found.</p>
-        <Link to="/">
-          <Button variant="outline">
-            <ArrowLeft className="mr-2 h-4 w-4" />
-            Back to Dashboard
-          </Button>
-        </Link>
+        <Link to="/"><Button variant="outline"><ArrowLeft className="mr-2 h-4 w-4" />Back to Dashboard</Button></Link>
       </div>
     )
   }
 
-  const status = statusConfig[audit.status]
+  return (
+    <ReviewLayout
+      audit={audit}
+      asset={asset}
+      findings={findings}
+      activeFindingId={activeFindingId}
+      onFindingClick={(f) => setActiveFindingId(f.id)}
+      onUpdateDisposition={updateDisposition}
+    />
+  )
+}
 
-  if (audit.status === 'pending' || audit.status === 'processing') {
-    return (
-      <div className="mx-auto max-w-md space-y-6 py-20 text-center">
-        <Loader2 className="mx-auto h-12 w-12 animate-spin text-primary" />
-        <div>
-          <h2 className="text-xl font-semibold">Auditing your document...</h2>
-          <p className="mt-1 text-muted-foreground">Parsing and analyzing. This should only take a moment.</p>
-        </div>
-        <Progress value={audit.status === 'processing' ? 60 : 20} />
-        <Badge variant={status.variant}>{status.label}</Badge>
-        {findingsLoading ? null : findings.length > 0 && (
-          <p className="text-sm text-muted-foreground">{findings.length} findings so far...</p>
-        )}
-      </div>
-    )
-  }
-
-  if (audit.status === 'failed') {
-    return (
-      <div className="mx-auto max-w-md space-y-4 py-20 text-center">
-        <h2 className="text-xl font-semibold text-destructive">Audit Failed</h2>
-        <p className="text-muted-foreground">{audit.error_message || 'An unknown error occurred.'}</p>
-        <Link to="/audit/new">
-          <Button>Try Again</Button>
-        </Link>
-      </div>
-    )
-  }
-
+function ReviewLayout({
+  audit, asset, findings, activeFindingId, onFindingClick, onUpdateDisposition,
+}: {
+  audit: Audit
+  asset: Asset
+  findings: Finding[]
+  activeFindingId?: string
+  onFindingClick: (f: Finding) => void
+  onUpdateDisposition: (id: string, disposition: FindingDisposition, comment?: string) => void
+}) {
   return (
     <div className="flex h-full flex-col -m-6">
       <div className="flex items-center justify-between border-b px-4 py-2">
@@ -141,16 +170,16 @@ export default function ReviewPage() {
             text={asset.extracted_text || ''}
             findings={findings}
             activeFindingId={activeFindingId}
-            onFindingClick={handleFindingClick}
+            onFindingClick={onFindingClick}
           />
         </Panel>
         <Separator />
         <Panel defaultSize={40} minSize={25}>
           <FindingsList
             findings={findings}
-            onUpdateDisposition={updateDisposition}
+            onUpdateDisposition={onUpdateDisposition}
             activeFindingId={activeFindingId}
-            onFindingClick={handleFindingClick}
+            onFindingClick={onFindingClick}
           />
         </Panel>
       </Group>
