@@ -1,7 +1,8 @@
 import * as pdfjsLib from 'pdfjs-dist'
+import pdfjsWorker from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 import JSZip from 'jszip'
 
-pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.mjs`
+pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorker
 
 export async function extractText(file: File): Promise<string> {
   const ext = file.name.split('.').pop()?.toLowerCase()
